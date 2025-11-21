@@ -24,56 +24,18 @@ if uploaded_file is not None:
         try:
             # Read FIT file
             fitfile = FitFile(io.BytesIO(uploaded_file.getvalue()))
-
-            # --- HEART RATE DATA ---
             hr_data = []
-
-            # --- GPS / Elevation / Distance ---
-            coords = []
-            elevation_data = []
-            distance_data = []
-
             for record in fitfile.get_messages("record"):
                 record_time = None
                 hr = None
-                lat, lon, alt, dist = None, None, None, None
-
                 for data in record:
-                    # Heart rate & timestamp
                     if data.name == "heart_rate":
                         hr = data.value
                     if data.name == "timestamp":
                         record_time = data.value
-
-                    # GPS
-                    if data.name == "position_lat":
-                        lat = data.value
-                    if data.name == "position_long":
-                        lon = data.value
-
-                    # Elevation
-                    if data.name == "enhanced_altitude":
-                        alt = data.value
-
-                    # Distance
-                    if data.name == "distance":
-                        dist = data.value
-
-                # Append HR data
                 if hr is not None and record_time is not None:
                     hr_data.append({"time": record_time, "hr": hr})
 
-                # Append coordinates safely
-                if lat is not None and lon is not None:
-                    coords.append((lat * (180 / 2**31), lon * (180 / 2**31)))  # semicircles → degrees
-
-                # Append elevation & distance if available
-                if alt is not None:
-                    elevation_data.append(alt)
-                if dist is not None:
-                    distance_data.append(dist / 1000)  # meters → km
-
-            # Convert HR data to DataFrame
             if len(hr_data) == 0:
                 st.warning("⚠️ No heart rate data found in this file.")
             else:
@@ -84,23 +46,6 @@ if uploaded_file is not None:
                 df["elapsed_hms"] = df["elapsed_sec"].apply(
                     lambda x: f"{int(x // 3600)}:{int((x % 3600) // 60):02d}:{int(x % 60):02d}"
                 )
-
-            # --- SUMMARY METRICS ---
-            kilometers = int(distance_data[-1]) if distance_data else 0
-            st.session_state['kilometers'] = kilometers
-            total_elevation_gain = int(sum(
-                max(0, elevation_data[i+1] - elevation_data[i])
-                for i in range(len(elevation_data)-1)
-            )) if elevation_data else 0
-            st.session_state['total_elevation_gain'] = total_elevation_gain
-
-            start_coords = coords[0] if coords else (None, None)
-            end_coords = coords[-1] if coords else (None, None)
-
-            # --- DISPLAY SUMMARY ---
-            st.markdown(f"**Start Coordinates:** {start_coords}")
-            st.markdown(f"**End Coordinates:** {end_coords}")
-
         except Exception as e:
             st.error(f"❌ Error reading FIT file: {e}")
 
@@ -112,23 +57,14 @@ with st.form("race_info_form"):
     athlete_name = st.text_input("🏃 Athlete's Name", value=st.session_state.get('athlete_name', ''))
     race_name = st.text_input("🏁 Race to be Analyzed", value=st.session_state.get('race_name', ''))
     race_date = st.date_input("📅 Date of the Race", value=st.session_state.get('race_date'))
-    kilometers = st.session_state.get('kilometers', None)
-    if kilometers is not None:
-        st.markdown(f"📏 **Distance Run:** {kilometers} km")
-    else:
-        st.markdown("📏 **Distance Run:** _waiting for FIT file upload_")
-    total_elevation_gain = st.session_state.get('total_elevation_gain', None)
-    if total_elevation_gain is not None:
-        st.markdown(f"🏔️ **Elevation gain:** {total_elevation_gain} m")
-    else:
-        st.markdown("🏔️ **Elevation gain:** _waiting for FIT file upload_")
-
+    kilometers = st.number_input("📏 Kilometers Run", min_value=0.1, step=0.1, value=st.session_state.get('kilometers', 5.0))
     info_submitted = st.form_submit_button("Submit Info")
 
 if info_submitted:
     st.session_state['athlete_name'] = athlete_name
     st.session_state['race_name'] = race_name
     st.session_state['race_date'] = race_date
+    st.session_state['kilometers'] = kilometers
     st.success("✅ Form submitted successfully!")
 
 # --- Heart Rate Zones Form ---
@@ -306,8 +242,7 @@ if st.button(" 🏃Run Analysis"):
         st.markdown(f"**Race:** {st.session_state['race_name']}")
         formatted_date = st.session_state['race_date'].strftime("%d/%m/%Y")
         st.markdown(f"**Date:** {formatted_date}")
-        st.markdown(f"📏 **Distance Run:** {kilometers} km")
-        st.markdown(f"🏔️ **Elevation gain:** {total_elevation_gain} m")
+        st.markdown(f"**Distance:** {st.session_state['kilometers']} km")
 
         total_seconds = df["elapsed_sec"].iloc[-1]
         hours = int(total_seconds // 3600)
@@ -707,7 +642,6 @@ if st.button(" 🏃Run Analysis"):
         pdf.body_text(f"Race: {race_name}")
         pdf.body_text(f"Date: {formatted_date}")
         pdf.body_text(f"Distance: {kilometers} km")
-        pdf.body_text(f"Elevation: {total_elevation_gain} m")
         pdf.body_text(f"Final Time: {final_time_str}")
         pdf.add_spacer()
         pdf.body_text(f"Overall Average HR: {overall_avg:.0f} bpm")
