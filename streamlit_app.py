@@ -597,12 +597,9 @@ else:
     else:
         st.warning("⚠️ Please submit the Heart Rate Zones to enable Time-in-Zone analysis.")    
 
-    # -----------------------------
-    # LAP / CLIMB ANALYSIS
-    # -----------------------------
-# -------------------------------
+# -----------------------------
 # LAP / CLIMB ANALYSIS
-# -------------------------------
+# -----------------------------
 if 'df' in locals() and not df.empty:
     if st.session_state.get("do_lap_analysis") and 'lap_data' in st.session_state:
         lap_data = st.session_state.get("lap_data", [])
@@ -634,6 +631,7 @@ if 'df' in locals() and not df.empty:
                 duration_sec = max(end_sec - start_sec, 1)
                 duration_hm = f"{int(duration_sec//3600)}:{int((duration_sec%3600)//60):02d}"
 
+                # Slice dataframe for this lap
                 df_lap = df[(df["elapsed_sec"] >= start_sec) & (df["elapsed_sec"] <= end_sec)].copy()
                 df_lap["time_diff_sec"] = df_lap["elapsed_sec"].diff().fillna(0)
                 df_lap["HR Zone Short"] = df_lap["HR Zone"].map(hr_zone_map)
@@ -643,16 +641,27 @@ if 'df' in locals() and not df.empty:
                 lap_summary_hm = [f"{int(x//3600)}:{int((x%3600)//60):02d}" for x in lap_summary.values]
                 pct_zones = [f"{round((x/duration_sec)*100)}%" for x in lap_summary.values]
 
+                # Average heart rate
                 avg_fc = int(df_lap["heart_rate"].mean()) if not df_lap.empty else 0
+
+                # Distance
                 distance = lap.get("distance", 0)
-                elevation = lap.get("elevation", 0)
+
+                # Elevation gain computed dynamically from original df using start_idx/end_idx
+                if "elevation_m" in df.columns and "start_idx" in lap and "end_idx" in lap:
+                    elevation = df.loc[lap["start_idx"]:lap["end_idx"], "elevation_m"].diff().clip(lower=0).sum()
+                else:
+                    elevation = 0
+
+                # NGP
                 ngp = lap.get("ngp", "")
 
+                # Build row
                 if st.session_state.get("analysis_type") == "Climb Analysis":
                     avg_grade = round((elevation / distance / 10) if distance > 0 else 0)
                     vam = round(elevation / (duration_sec / 3600) if duration_sec > 0 else 0)
                     lap_zone_data.append([
-                        lap["name"], duration_hm, int(distance), int(elevation),
+                        lap["name"], duration_hm, round(distance, 2), int(elevation),
                         avg_fc, avg_grade, vam, ngp
                     ] + lap_summary_hm + pct_zones)
                 else:  # Lap Analysis
@@ -664,7 +673,7 @@ if 'df' in locals() and not df.empty:
                     else:
                         lap_pace = "00:00"
                     lap_zone_data.append([
-                        lap["name"], duration_hm, int(distance), int(elevation),
+                        lap["name"], duration_hm, round(distance, 2), int(elevation),
                         avg_fc, lap_pace, ngp
                     ] + lap_summary_hm + pct_zones)
 
