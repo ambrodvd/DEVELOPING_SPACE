@@ -309,84 +309,10 @@ if st.session_state.get("lap_data_insert") == "automatic":
         st.info("👆 Please upload a .fit file to automatically detect laps")
 
 # ---------------------------
-# FIX DISTANCE / DISTANCE SLICER
-# ---------------------------
-
-# ---------------------------
-# FIX DISTANCE / DISTANCE SLICER
-# ---------------------------
-# ---------------------------
-# FIX DISTANCE / DISTANCE SLICER
-# ---------------------------
-if st.session_state.get("lap_data_insert") == "fix_distance":
-    if uploaded_file is not None and 'df' in locals():
-        max_distance = df["distance_km"].max()
-        slice_distance = st.number_input(
-            "How many km would you like the lap to be?",
-            min_value=1,
-            max_value=int(math.ceil(max_distance)),
-            value=10
-        )
-
-        if st.button("Generate Laps"):
-            laps = []
-            start_dist = 0.0
-            lap_num = 1
-            total_distance = round(max_distance, 3)  # round to avoid floating point errors
-
-            while start_dist < total_distance:
-                # For last lap, use remaining distance
-                end_dist = start_dist + slice_distance
-                if end_dist > total_distance:
-                    end_dist = total_distance
-
-                # Round distances for comparison to avoid floating point issues
-                lap_df = df[(df["distance_km"].round(3) >= round(start_dist, 3)) &
-                            (df["distance_km"].round(3) <= round(end_dist, 3))].copy()
-                if lap_df.empty:
-                    break
-
-                # Calculate start/end time in HH:MM
-                start_sec = lap_df["elapsed_sec"].iloc[0]
-                end_sec = lap_df["elapsed_sec"].iloc[-1]
-                duration_sec = end_sec - start_sec
-                start_hhmm = seconds_to_hhmm(start_sec)
-                end_hhmm = seconds_to_hhmm(end_sec)
-                duration_hhmm = seconds_to_hhmm(duration_sec)
-
-                # Correct lap distance (last lap may be shorter)
-                lap_distance = round(end_dist - start_dist, 3)
-
-                laps.append({
-                    "name": f"Lap {lap_num}",
-                    "start_time": start_hhmm,
-                    "end_time": end_hhmm,
-                    "duration": duration_hhmm,
-                    "start_idx": lap_df.index[0],
-                    "end_idx": lap_df.index[-1],
-                    "distance": lap_distance
-                })
-
-                start_dist += slice_distance
-                lap_num += 1
-
-            # Store laps in session_state for further analysis
-            st.session_state["lap_data"] = laps
-            st.session_state["lap_form_submitted"] = True
-
-            st.subheader("Distance Slicer Laps")
-            if laps:
-                lap_df_display = pd.DataFrame(laps)[["name", "start_time", "end_time", "duration", "distance"]]
-                st.dataframe(lap_df_display)
-            else:
-                st.warning("No laps generated. Check the distance slice or your FIT file.")
-    else:
-        st.info("👆 Please upload a .fit file first to use the Distance Slicer.")
-# ---------------------------
-# MANUAL LAP INPUT
+# MANUAL / FIX DISTANCE LAP INPUT
 # ---------------------------
 if (st.session_state.get("do_lap_analysis") and st.session_state.get("analysis_type") == "climb") \
-   or st.session_state.get("lap_data_insert") in ["manual"]:
+   or st.session_state.get("lap_data_insert") in ["manual", "fix_distance"]:
 
     num_laps = st.number_input(
         f"How many {st.session_state.get('analysis_type','')} would you like to analyze?",
@@ -446,20 +372,6 @@ if (st.session_state.get("do_lap_analysis") and st.session_state.get("analysis_t
 #-------------
 # ------- ANALYSIS START
 #-------------
-
-# ---- page slicer
-st.markdown(
-    """
-    <hr style="border:1px solid #336699">
-    <h4 style='text-align:center; color:white;'>📊 Race Analysis</h4>
-    <hr style="border:1px solid #336699">
-    """,
-    unsafe_allow_html=True
-)
-
-# ----- analys
-
-
 if uploaded_file is None:
     st.info("👆 Upload a FIT file to run the analysis")
 else:
