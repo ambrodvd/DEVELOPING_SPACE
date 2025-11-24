@@ -277,25 +277,38 @@ if st.session_state.get("lap_data_insert") == "automatic":
                     last_crossing_idx = idx
             inside = currently_inside
 
-        # --- Build loops safely only if crossings detected ---
         if len(crossings) > 1:
+            loops = []
             for i in range(1, len(crossings)):
                 prev_idx, prev_time = crossings[i-1]
                 idx, time = crossings[i]
-                start_delta = pd.to_datetime(prev_time) - start_time
-                end_delta = pd.to_datetime(time) - start_time
-                duration = end_delta - start_delta
+
+                df_lap = df.iloc[prev_idx:idx+1]  # include all points in this loop
+
+                # Duration
+                start_sec = df_lap["elapsed_sec"].iloc[0]
+                end_sec = df_lap["elapsed_sec"].iloc[-1]
+                duration_sec = end_sec - start_sec
+
+                # Distance in km
+                lap_distance = df_lap["distance_km"].max() - df_lap["distance_km"].min() if "distance_km" in df_lap else 0
+
+                # Elevation gain
+                lap_elevation = df_lap["elevation_m"].diff().clip(lower=0).sum() if "elevation_m" in df_lap else 0
+
+                # Save the loop with all needed info
                 loops.append({
                     "name": f"Lap {i}",
-                    "start_time": seconds_to_hhmm(start_delta.total_seconds()),
-                    "end_time": seconds_to_hhmm(end_delta.total_seconds()),
-                    "duration": seconds_to_hhmm(duration.total_seconds()),
+                    "start_time": seconds_to_hhmm(start_sec),
+                    "end_time": seconds_to_hhmm(end_sec),
+                    "duration": seconds_to_hhmm(duration_sec),
                     "start_idx": prev_idx,
                     "end_idx": idx,
+                    "distance": lap_distance,
+                    "elevation": lap_elevation,
                     "ngp": ""
                 })
 
-        # --- Store detected loops in session_state ---
         st.session_state["lap_data"] = loops
         st.session_state["lap_form_submitted"] = True
 
@@ -308,13 +321,6 @@ if st.session_state.get("lap_data_insert") == "automatic":
     else:
         st.info("👆 Please upload a .fit file to automatically detect laps")
 
-# ---------------------------
-# FIX DISTANCE / DISTANCE SLICER
-# ---------------------------
-
-# ---------------------------
-# FIX DISTANCE / DISTANCE SLICER
-# ---------------------------
 # ---------------------------
 # FIX DISTANCE / DISTANCE SLICER
 # ---------------------------
@@ -626,65 +632,63 @@ if 'df' in locals() and not df.empty:
                     return 0
 
             for lap in lap_data:
+                # --- Compute start/end seconds ---
                 start_sec = h_mm_to_seconds(lap.get("start_time", "0:00"))
                 end_sec = h_mm_to_seconds(lap.get("end_time", "0:01"))
                 duration_sec = max(end_sec - start_sec, 1)
                 duration_hm = f"{int(duration_sec//3600)}:{int((duration_sec%3600)//60):02d}"
 
-                # Slice dataframe for this lap
-                df_lap = df[(df["elapsed_sec"] >= start_sec) & (df["elapsed_sec"] <= end_sec)].copy()
+                # --- Slice dataframe for this lap ---
+                if "start_idx" in lap and "end_idx" in lap:
+                    df_lap = df.loc[lap["start_idx"]:lap["end_idx"]].copy()
+                else:
+                    df_lap = df[(df["elapsed_sec"] >= start_sec) & (df["elapsed_sec"] <= end_sec)].copy()
+
                 df_lap["time_diff_sec"] = df_lap["elapsed_sec"].diff().fillna(0)
                 df_lap["HR Zone Short"] = df_lap["HR Zone"].map(hr_zone_map)
 
-                # HR zone summary
+                # --- HR zone summary ---
                 lap_summary = df_lap.groupby("HR Zone Short")["time_diff_sec"].sum().reindex(zone_order).fillna(0)
                 lap_summary_hm = [f"{int(x//3600)}:{int((x%3600)//60):02d}" for x in lap_summary.values]
                 pct_zones = [f"{round((x/duration_sec)*100)}%" for x in lap_summary.values]
 
-                # Average heart rate
+                # --- Average HR ---
                 avg_fc = int(df_lap["heart_rate"].mean()) if not df_lap.empty else 0
 
-                # Distance
-                distance = lap.get("distance", 0)
+                # --- Distance and elevation gain dynamically ---
+                distance = round(df_lap["distance_km"].max() - df_lap["distance_km"].min(), 2) if "distance_km" in df_lap else 0
+                elevation = df_lap["elevation_m"].diff().clip(lower=0).sum() if "elevation_m" in df_lap else 0
 
-                # Elevation gain computed dynamically from original df using start_idx/end_idx
-                if "elevation_m" in df.columns and "start_idx" in lap and "end_idx" in lap:
-                    elevation = df.loc[lap["start_idx"]:lap["end_idx"], "elevation_m"].diff().clip(lower=0).sum()
-                else:
-                    elevation = 0
-
-                # NGP
+                # --- NGP ---
                 ngp = lap.get("ngp", "")
 
-                # Build row
-                if st.session_state.get("analysis_type") == "Climb Analysis":
+                # --- Build row depending on analysis type ---
+                if st.session_state.get("analysis_type") == "climb":
                     avg_grade = round((elevation / distance / 10) if distance > 0 else 0)
                     vam = round(elevation / (duration_sec / 3600) if duration_sec > 0 else 0)
                     lap_zone_data.append([
-                        lap["name"], duration_hm, round(distance, 2), int(elevation),
+                        lap.get("name", "Lap"), duration_hm, distance, int(elevation),
                         avg_fc, avg_grade, vam, ngp
                     ] + lap_summary_hm + pct_zones)
-                else:  # Lap Analysis
-                    if distance > 0:
-                        pace_min_float = duration_sec / 60 / distance
-                        pace_min = int(pace_min_float)
-                        pace_sec = int(round((pace_min_float - pace_min) * 60))
-                        lap_pace = f"{pace_min:02d}:{pace_sec:02d}"
-                    else:
-                        lap_pace = "00:00"
+                else:  # Lap analysis
+                    pace_min_float = duration_sec / 60 / distance if distance > 0 else 0
+                    pace_min = int(pace_min_float)
+                    pace_sec = int(round((pace_min_float - pace_min) * 60))
+                    lap_pace = f"{pace_min:02d}:{pace_sec:02d}" if distance > 0 else "00:00"
+
                     lap_zone_data.append([
-                        lap["name"], duration_hm, round(distance, 2), int(elevation),
+                        lap.get("name", "Lap"), duration_hm, distance, int(elevation),
                         avg_fc, lap_pace, ngp
                     ] + lap_summary_hm + pct_zones)
 
-            # Build DataFrame
-            if st.session_state.get("analysis_type") == "Climb Analysis":
+            # --- Build DataFrame ---
+            if st.session_state.get("analysis_type") == "climb":
                 extra_cols = ["Avg FC", "Avg Grade (%)", "VAM (m/h)", "NGP"]
             else:
                 extra_cols = ["Avg FC", "Lap Pace (min/km)", "NGP"]
 
             pct_cols = [f"% {z}" for z in zone_order]
-            columns = [f"{st.session_state.get('analysis_type','').replace(' Analysis','')} Name",
+            columns = [f"{st.session_state.get('analysis_type','').replace(' Analysis','').capitalize()} Name",
                        "Duration", "Distance (km)", "Elevation (m)"] + extra_cols + zone_order + pct_cols
 
             lap_zone_df = pd.DataFrame(lap_zone_data, columns=columns)
