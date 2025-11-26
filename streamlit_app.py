@@ -200,6 +200,104 @@ else:
     st.session_state["analysis_type"] = None
     st.session_state["do_lap_analysis"] = False
 
+#------------#
+#----------- CLIMB ANALYS CHOICHE --------#
+
+if st.session_state.get("do_lap_analysis") and st.session_state.get("analysis_type") == "climb":
+    climb_data_insert = st.radio(
+        "How do you want to insert climb data?",
+        ("Manually", "Automatic Climb Detector"),
+        index=0,
+        key="climb_data_insert_selector"
+    )
+    
+    if climb_data_insert == "Manually":
+        st.session_state["climb_data_insert"] = "manual"
+    else:
+        st.session_state["climb_data_insert"] = "automatic"
+
+    # ---------------------------
+    # AUTOMATIC CLIMB DETECTOR
+    # ---------------------------
+    if st.session_state.get("climb_data_insert") == "automatic":
+        if uploaded_file is not None and "df" in locals():
+            min_elev_gain = st.number_input("Minimum elevation gain for a climb (meters)", value=50, min_value=1)
+            min_downhill = st.number_input("Minimum downhill to stop climb detection (meters)", value=5, min_value=1)
+
+            climbs = []
+            in_climb = False
+            climb_start_idx = None
+            total_gain = 0
+
+            for i in range(1, len(df)):
+                delta_elev = df.loc[i, "elevation_m"] - df.loc[i-1, "elevation_m"]
+
+                # Detect start of climb
+                if not in_climb and delta_elev > 0:
+                    in_climb = True
+                    climb_start_idx = i-1
+                    total_gain = delta_elev
+
+                elif in_climb:
+                    # Accumulate only uphill
+                    total_gain += max(delta_elev, 0)
+
+                    # Stop climb at first downhill after min_elev_gain
+                    if delta_elev < 0 and total_gain >= min_elev_gain:
+                        climb_end_idx = i-1
+                        climb_distance = df.loc[climb_end_idx, "distance_km"] - df.loc[climb_start_idx, "distance_km"]
+                        climb_duration_sec = df.loc[climb_end_idx, "elapsed_sec"] - df.loc[climb_start_idx, "elapsed_sec"]
+
+                        climbs.append({
+                            "start_idx": climb_start_idx,
+                            "end_idx": climb_end_idx,
+                            "start_time": seconds_to_hhmm(df.loc[climb_start_idx, "elapsed_sec"]),
+                            "end_time": seconds_to_hhmm(df.loc[climb_end_idx, "elapsed_sec"]),
+                            "duration": seconds_to_hhmm(climb_duration_sec),
+                            "distance": round(climb_distance, 2),
+                            "elevation_gain": round(total_gain, 1)
+                        })
+
+                        # Reset for next climb
+                        in_climb = False
+                        climb_start_idx = None
+                        total_gain = 0
+
+            st.session_state["climb_data"] = climbs
+            st.session_state["climb_form_submitted"] = True
+
+            # ---------------------------
+            # PLOT ELEVATION WITH CLIMBS
+            # ---------------------------
+            if climbs:
+                fig, ax = plt.subplots(figsize=(12, 4))
+                ax.plot(df["elapsed_sec"]/60, df["elevation_m"], color="gray", label="Elevation")
+
+                for c in climbs:
+                    ax.fill_between(
+                        df.loc[c["start_idx"]:c["end_idx"], "elapsed_sec"]/60,
+                        df.loc[c["start_idx"]:c["end_idx"], "elevation_m"],
+                        color="green", alpha=0.4
+                    )
+
+                ax.set_xlabel("Time [min]")
+                ax.set_ylabel("Elevation [m]")
+                ax.set_title("Detected Climbs")
+                ax.legend(["Elevation", "Climbs"])
+                st.pyplot(fig)
+
+                # ---------------------------
+                # TABLE OF DETECTED CLIMBS
+                # ---------------------------
+                climb_df = pd.DataFrame(climbs)
+                st.subheader("Detected Climbs")
+                st.dataframe(climb_df[["start_time", "end_time", "duration", "distance", "elevation_gain"]])
+
+            else:
+                st.warning("No climbs detected with the selected thresholds.")
+        else:
+            st.info("👆 Please upload a .fit file first to use the Automatic Climb Detector.")
+
 # ---------------------------
 # LAP ANALYSIS WITH AUTO LOOP DETECTOR
 # ---------------------------
@@ -322,8 +420,6 @@ if st.session_state.get("lap_data_insert") == "automatic":
             st.dataframe(loops_df[["name", "start_time", "end_time", "duration", "distance", "elevation"]])
         else:
             st.warning("No loops detected.")
-else:
-    st.warning("No loops detected")
 
 
 # ---------------------------
@@ -396,7 +492,7 @@ if st.session_state.get("lap_data_insert") == "fix_distance":
 # ---------------------------
 # MANUAL LAP INPUT
 # ---------------------------
-if (st.session_state.get("do_lap_analysis") and st.session_state.get("analysis_type") == "climb") \
+if (st.session_state.get("do_lap_analysis") and st.session_state.get("climb_data_insert") in ["manual"]) \
    or st.session_state.get("lap_data_insert") in ["manual"]:
 
     num_laps = st.number_input(
