@@ -10,6 +10,8 @@ import matplotlib.ticker as mticker
 import plotly.express as px
 import seaborn as sns
 import math
+import haversine
+import tempfile
 
 st.set_page_config(page_title="DU COACHING RACE Analyzer", layout="wide")
 st.title("📊 DU COACHING RACE Analyzer")
@@ -220,9 +222,11 @@ if st.session_state.get("do_lap_analysis") and st.session_state.get("analysis_ty
 # ---------------------------
 # AUTOMATIC LOOP DETECTOR
 # ---------------------------
+
 loops = []  # default empty
+
 if st.session_state.get("lap_data_insert") == "automatic":
-    if uploaded_file is not None:
+    if uploaded_file is not None and "df" in locals():
         # --- Parameters ---
         col1, col2, col3 = st.columns(3)
         with col1:
@@ -232,41 +236,34 @@ if st.session_state.get("lap_data_insert") == "automatic":
         with col3:
             min_samples_between_crossings = st.slider("Min samples between crossings", 1, 50, 5)
 
-        # --- Read FIT file ---
-        fitfile = FitFile(uploaded_file)
-        records = []
-        for rec in fitfile.get_messages("record"):
-            row = {field.name: field.value for field in rec}
-            records.append(row)
-        df = pd.DataFrame(records)
-
-        if "timestamp" not in df.columns or "position_lat" not in df.columns or "position_long" not in df.columns:
-            st.error("Missing required GPS/timestamp data in FIT file.")
+        # --- Validate required columns ---
+        required_cols = ["lat", "lon", "timestamp", "elevation_m", "distance_km", "elapsed_sec"]
+        if not all(col in df.columns for col in required_cols):
+            st.error(f"Missing required columns: {', '.join([c for c in required_cols if c not in df.columns])}")
             st.stop()
 
-        df = df.dropna(subset=["position_lat", "position_long", "timestamp"]).reset_index(drop=True)
-        df["lat"] = df["position_lat"].apply(lambda s: s * (180.0 / 2**31))
-        df["lon"] = df["position_long"].apply(lambda s: s * (180.0 / 2**31))
+        df = df.dropna(subset=["lat", "lon", "timestamp"]).reset_index(drop=True)
 
-        df["timestamp"] = pd.to_datetime(df["timestamp"])
-        start_time = df["timestamp"].iloc[0]
-        df["elapsed_sec"] = (df["timestamp"] - start_time).dt.total_seconds()
+        # --- Ensure numeric types ---
+        df["elevation_m"] = df["elevation_m"].astype(float)
+        df["distance_km"] = df["distance_km"].astype(float)
 
-        # --- Compute distances from start ---
-        start_lat = df.loc[0, "lat"]
-        start_lon = df.loc[0, "lon"]
-        start_time = pd.to_datetime(df.loc[0, "timestamp"])
-        df["dist_from_start_m"] = df.apply(lambda r: haversine(start_lat, start_lon, r["lat"], r["lon"]), axis=1)
+        # --- Compute distance from start (meters) for loop detection ---
+        from haversine import haversine
+
+        start_lat, start_lon = df.loc[0, ["lat", "lon"]]
+        df["dist_from_start_m"] = df.apply(
+            lambda r: haversine((start_lat, start_lon), (r["lat"], r["lon"])) * 1000,
+            axis=1
+        )
         threshold = base_radius + percent_error * df["dist_from_start_m"].max()
 
         # --- Loop detection ---
         crossings = []
-        first_inside = df.loc[0, "dist_from_start_m"] <= threshold
-        if first_inside:
+        inside = df.loc[0, "dist_from_start_m"] <= threshold
+        last_crossing_idx = 0 if inside else -1
+        if inside:
             crossings.append((0, df.loc[0, "timestamp"]))
-
-        inside = first_inside
-        last_crossing_idx = 0 if first_inside else -1
 
         for idx in range(1, len(df)):
             d = df.loc[idx, "dist_from_start_m"]
@@ -277,31 +274,33 @@ if st.session_state.get("lap_data_insert") == "automatic":
                     last_crossing_idx = idx
             inside = currently_inside
 
+        # --- Build loops ---
         if len(crossings) > 1:
             loops = []
             for i in range(1, len(crossings)):
-                prev_idx, prev_time = crossings[i-1]
-                idx, time = crossings[i]
+                prev_idx, _ = crossings[i-1]
+                idx, _ = crossings[i]
 
-                df_lap = df.iloc[prev_idx:idx+1]  # include all points in this loop
+                df_lap = df.iloc[prev_idx:idx+1].copy()
 
                 # Duration
                 start_sec = df_lap["elapsed_sec"].iloc[0]
                 end_sec = df_lap["elapsed_sec"].iloc[-1]
                 duration_sec = end_sec - start_sec
+                duration_hhmm = seconds_to_hhmm(duration_sec)
 
                 # Distance in km
-                lap_distance = df_lap["distance_km"].max() - df_lap["distance_km"].min() if "distance_km" in df_lap else 0
+                lap_distance = df_lap["distance_km"].max() - df_lap["distance_km"].min()
 
-                # Elevation gain
-                lap_elevation = df_lap["elevation_m"].diff().clip(lower=0).sum() if "elevation_m" in df_lap else 0
+                # Elevation gain in meters
+                lap_elevation = df_lap["elevation_m"].diff().clip(lower=0).sum()
 
-                # Save the loop with all needed info
+                # Save the loop
                 loops.append({
                     "name": f"Lap {i}",
                     "start_time": seconds_to_hhmm(start_sec),
                     "end_time": seconds_to_hhmm(end_sec),
-                    "duration": seconds_to_hhmm(duration_sec),
+                    "duration": duration_hhmm,
                     "start_idx": prev_idx,
                     "end_idx": idx,
                     "distance": lap_distance,
@@ -315,11 +314,17 @@ if st.session_state.get("lap_data_insert") == "automatic":
         st.subheader("Detected Loops")
         if loops:
             loops_df = pd.DataFrame(loops)
-            st.dataframe(loops_df[["name", "start_time", "end_time", "duration"]])
+
+            # --- Format distance and elevation ---
+            loops_df["distance"] = loops_df["distance"].astype(float).map("{:.1f}".format)
+            loops_df["elevation"] = loops_df["elevation"].astype(int)
+
+            st.dataframe(loops_df[["name", "start_time", "end_time", "duration", "distance", "elevation"]])
         else:
-            st.warning("No loops detected")
-    else:
-        st.info("👆 Please upload a .fit file to automatically detect laps")
+            st.warning("No loops detected.")
+else:
+    st.warning("No loops detected")
+
 
 # ---------------------------
 # FIX DISTANCE / DISTANCE SLICER
@@ -656,7 +661,7 @@ if 'df' in locals() and not df.empty:
                 avg_fc = int(df_lap["heart_rate"].mean()) if not df_lap.empty else 0
 
                 # --- Distance and elevation gain dynamically ---
-                distance = round(df_lap["distance_km"].max() - df_lap["distance_km"].min(), 2) if "distance_km" in df_lap else 0
+                distance = round(df_lap["distance_km"].max() - df_lap["distance_km"].min(),1) if "distance_km" in df_lap else 0
                 elevation = df_lap["elevation_m"].diff().clip(lower=0).sum() if "elevation_m" in df_lap else 0
 
                 # --- NGP ---
@@ -692,6 +697,8 @@ if 'df' in locals() and not df.empty:
                        "Duration", "Distance (km)", "Elevation (m)"] + extra_cols + zone_order + pct_cols
 
             lap_zone_df = pd.DataFrame(lap_zone_data, columns=columns)
+            if "Distance (km)" in lap_zone_df.columns:
+                lap_zone_df["Distance (km)"] = lap_zone_df["Distance (km)"].astype(float).map("{:.1f}".format)
             st.dataframe(lap_zone_df.style.hide(axis="index"))
 
         else:
@@ -701,7 +708,11 @@ if 'df' in locals() and not df.empty:
 else:
     st.warning("⚠️ Please upload a FIT file first to perform analysis.")
 
-    # --- DET Index ---
+#--------------------#
+# --- DET Index ---
+#------------------------#
+
+if uploaded_file is not None:
     X = df["elapsed_sec"].values.reshape(-1,1)
     y = df["hr_smooth"].values
     reg = LinearRegression().fit(X,y)
@@ -717,93 +728,113 @@ else:
     tooltip_text = ("DI < 4 - SCARSO DECADIMENTO\nDI = 7 - DECADIMENTO MEDIO\nDI > 10 - ALTO DECADIMENTO")
     st.markdown(f"<div title='{tooltip_text}' style='font-size:16px; background-color:{color}; color:black; padding:5px; border-radius:5px; display:inline-block;'>📈 DET INDEX: <b>{det_index_str}</b> ({comment})</div>", unsafe_allow_html=True)
 
-    if 'combined_df' in locals():
+# -------------------------#
+# ---- LIVE CHARTS ------------- #
 
-        # GROUPED BAR CHART FOR TIME IN ZONE
-        
-        bar_df = combined_df.copy()
-        bar_df.index = [f"Zone {i+1}" for i in range(len(bar_df))]
-        bar_df_reset = bar_df.reset_index().rename(columns={'index':'HR Zone'})
-        bar_long = bar_df_reset.melt(id_vars="HR Zone", var_name="Segment", value_name="Time [h:mm]")
+if uploaded_file is not None:
+    # GROUPED BAR CHART FOR TIME IN ZONE
+    
+    bar_df = combined_df.copy()
+    bar_df.index = [f"Zone {i+1}" for i in range(len(bar_df))]
+    bar_df_reset = bar_df.reset_index().rename(columns={'index':'HR Zone'})
+    bar_long = bar_df_reset.melt(id_vars="HR Zone", var_name="Segment", value_name="Time [h:mm]")
 
-        # Convert H:MM to hours float
-        def h_mm_to_float(hmm_str):
-            try:
-                h, m = map(int, hmm_str.split(":"))
-                return h + m/60
-            except:
-                return 0
+    # Convert H:MM to hours float
+    def h_mm_to_float(hmm_str):
+        try:
+            h, m = map(int, hmm_str.split(":"))
+            return h + m/60
+        except:
+            return 0
 
-        bar_long["Hours"] = bar_long["Time [h:mm]"].apply(h_mm_to_float)
+    bar_long["Hours"] = bar_long["Time [h:mm]"].apply(h_mm_to_float)
 
-        fig_bar = px.bar(
-            bar_long,
+    fig_bar = px.bar(
+        bar_long,
+        x="HR Zone",
+        y="Hours",
+        color="Segment",
+        barmode="group",
+        hover_data={"Segment": True, "Time [h:mm]": True, "Hours": False, "HR Zone": True},
+        title="⏱️ Time-in-Zone per Segment (Bar Chart)"
+    )
+    
+    st.plotly_chart(fig_bar, use_container_width=True)
+
+    # HEATMAP GRAPH IN MINUTES
+    # Convert H:MM to minutes
+    def h_mm_to_minutes(hmm_str):
+        try:
+            h, m = map(int, hmm_str.split(":"))
+            return h*60 + m
+        except:
+            return 0
+
+    heatmap_df_minutes = bar_df.applymap(h_mm_to_minutes)
+    heatmap_df_minutes.index = [f"Zone {i+1}" for i in range(len(heatmap_df_minutes))]
+    heatmap_df_minutes_reset = heatmap_df_minutes.reset_index().rename(columns={'index':'HR Zone'})
+    heatmap_long = heatmap_df_minutes_reset.melt(id_vars="HR Zone", var_name="Segment", value_name="Minutes")
+
+    fig_heat = px.density_heatmap(
+        heatmap_long,
+        x="Segment",
+        y="HR Zone",
+        z="Minutes",
+        text_auto=True,
+        color_continuous_scale="YlOrRd",
+        hover_data={"Segment": True, "HR Zone": True, "Minutes": True},
+        title="🌡️ Time-in-Zone (minutes) Heatmap"
+    )
+    fig_heat.update_layout(
+        yaxis=dict(autorange='reversed'),
+        coloraxis_colorbar=dict(title="Time (minutes)")
+    )
+
+    st.plotly_chart(fig_heat, use_container_width=True)
+
+# --- Plotly chart for % time in HR zones per Lap/Climb ---
+if st.session_state.get("do_lap_analysis") and 'lap_zone_df' in locals():
+
+    # Define % columns for HR zones
+    hr_zones = ["Z1","Z2","Z3","Z4","Z5"]
+    pct_cols = [f"% {z}" for z in hr_zones]
+
+    # Determine the correct name column in lap_zone_df
+    if "Lap Name" in lap_zone_df.columns:
+        name_col = "Lap Name"
+    elif "Climb Name" in lap_zone_df.columns:
+        name_col = "Climb Name"
+    else:
+        st.warning("Could not find the Name column in lap_zone_df.")
+        name_col = None
+
+    if name_col:
+        # Select only name and % columns
+        df_plot = lap_zone_df[[name_col] + pct_cols].copy()
+
+        # Convert percentage strings to numeric
+        for col in pct_cols:
+            df_plot[col] = df_plot[col].str.rstrip('%').astype(float)
+
+        # Melt the DataFrame for Plotly
+        df_melted = df_plot.melt(
+            id_vars=[name_col],
+            value_vars=pct_cols,
+            var_name="HR Zone",
+            value_name="Percentage"
+        )
+
+        # Plot
+        fig = px.bar(
+            df_melted,
             x="HR Zone",
-            y="Hours",
-            color="Segment",
+            y="Percentage",
+            color=name_col,
             barmode="group",
-            hover_data={"Segment": True, "Time [h:mm]": True, "Hours": False, "HR Zone": True},
-            title="⏱️ Time-in-Zone per Segment (Bar Chart)"
-        )
-        
-        st.plotly_chart(fig_bar, use_container_width=True)
-
-        # HEATMAP GRAPH IN MINUTES
-        # Convert H:MM to minutes
-        def h_mm_to_minutes(hmm_str):
-            try:
-                h, m = map(int, hmm_str.split(":"))
-                return h*60 + m
-            except:
-                return 0
-
-        heatmap_df_minutes = bar_df.applymap(h_mm_to_minutes)
-        heatmap_df_minutes.index = [f"Zone {i+1}" for i in range(len(heatmap_df_minutes))]
-        heatmap_df_minutes_reset = heatmap_df_minutes.reset_index().rename(columns={'index':'HR Zone'})
-        heatmap_long = heatmap_df_minutes_reset.melt(id_vars="HR Zone", var_name="Segment", value_name="Minutes")
-
-        fig_heat = px.density_heatmap(
-            heatmap_long,
-            x="Segment",
-            y="HR Zone",
-            z="Minutes",
-            text_auto=True,
-            color_continuous_scale="YlOrRd",
-            hover_data={"Segment": True, "HR Zone": True, "Minutes": True},
-            title="🌡️ Time-in-Zone (minutes) Heatmap"
-        )
-        fig_heat.update_layout(
-            yaxis=dict(autorange='reversed'),
-            coloraxis_colorbar=dict(title="Time (minutes)")
+            title=f"{analysis_type} - % Time in HR Zones"
         )
 
-        st.plotly_chart(fig_heat, use_container_width=True)
-    # --- Plotly chart for % time in HR zones per Lap/Climb ---
-        #LAP CARDIAC PERCENTAGE TIME IN ZONES BAR CHART
-        if st.session_state["do_lap_analysis"]:
-            # Select only % columns and lap names
-            pct_cols = [f"% {z}" for z in ["Z1","Z2","Z3","Z4","Z5"]]
-            df_plot = lap_zone_df[["{} name".format(analysis_type[:-8])] + pct_cols].copy()
-
-            # Convert percentage strings to numeric
-            for col in pct_cols:
-                df_plot[col] = df_plot[col].str.rstrip('%').astype(float)
-
-            # Melt the DataFrame for plotly
-            df_melted = df_plot.melt(id_vars=["{} name".format(analysis_type[:-8])],
-                                    value_vars=pct_cols,
-                                    var_name="HR Zone",
-                                    value_name="Percentage")
-
-            # Plot
-            fig = px.bar(df_melted, 
-                        x="HR Zone", 
-                        y="Percentage", 
-                        color="{} name".format(analysis_type[:-8]),
-                        barmode="group",
-                        title=f"{analysis_type} - % Time in HR Zones")
-
-            st.plotly_chart(fig)
+        st.plotly_chart(fig)
 
     # --- Plotly chart for HR vs TIME ---
     df["trend_line"] = reg.predict(X)
@@ -819,7 +850,7 @@ else:
     st.plotly_chart(fig, use_container_width=True)
 
 # --------------------------------------------------------------------
-# Modern PDF Class
+# PDF GENERATION
 # --------------------------------------------------------------------
 class ModernPDF(FPDF):
     def header(self):
@@ -853,27 +884,59 @@ class ModernPDF(FPDF):
         self.ln(h)
 
 # --------------------------------------------------------------------
-# PDF Generation
+# PDF GENERATION CLASS
 # --------------------------------------------------------------------
-if 'athlete_name' not in st.session_state:
-    st.warning("⚠️ Please submit the Athlete and Race info in the form above")
-segment_keys = [
-    'segment1_start','segment1_end',
-    'segment2_start','segment2_end',
-    'segment3_start','segment3_end'
-    ]
+from fpdf import FPDF
 
-if not all(k in st.session_state for k in segment_keys):
-    missing_seg = [k for k in segment_keys if k not in st.session_state]
-    st.warning(f"⚠️ Please submit the Time Segments in the form above to enable Time-in-Zone analysis.")
+class ModernPDF(FPDF):
+    """Custom PDF class for DU Coaching Race Analyzer."""
+    
+    def header(self):
+        # Header bar
+        self.set_fill_color(30, 30, 30)
+        self.rect(0, 0, 210, 30, 'F')
+        self.set_xy(10, 6)
+        self.set_text_color(255, 255, 255)
+        self.set_font("Helvetica", "B", 16)
+        self.cell(0, 10, "DU COACHING - Race Analyzer Report", ln=True)
+        
+        # Subtitle
+        self.set_xy(10, 18)
+        self.set_font("Helvetica", "I", 11)
+        self.set_text_color(200, 200, 200)
+        self.cell(0, 6, "This analyzer is brought to you by Coach Ambro", ln=True)
+        self.ln(5)
+    
+    def section_title(self, title: str):
+        """Add a section title with background fill."""
+        self.set_font("Helvetica", "B", 13)
+        self.set_text_color(30, 30, 30)
+        self.set_fill_color(240, 240, 240)
+        self.cell(0, 10, title, ln=True, fill=True)
+        self.ln(4)
+    
+    def body_text(self, text: str):
+        """Add a paragraph of body text."""
+        self.set_font("Helvetica", "", 11)
+        self.set_text_color(55, 55, 55)
+        self.multi_cell(0, 6, text)
+        self.ln(2)
+    
+    def add_spacer(self, height: int = 4):
+        """Add vertical space."""
+        self.ln(height)
 
+
+# --------------------------------------------------------------------
+# PDF REPORT GENERATION LOGIC
+# --------------------------------------------------------------------
 if st.button("📄 Generate PDF Report"):
 
     pdf = ModernPDF()
     pdf.add_page()
     pdf.set_auto_page_break(auto=True, margin=15)
 
-    # ------------------ Athlete Info ------------------
+    # --- Athlete & Race Info ---
     pdf.section_title("Athlete & Race Information")
     pdf.body_text(f"Athlete: {athlete_name}")
     pdf.body_text(f"Race: {race_name}")
@@ -889,19 +952,17 @@ if st.button("📄 Generate PDF Report"):
     pdf.body_text(f"DET Index: {det_index_str} ({comment})")
     pdf.add_spacer(6)
 
-    # ------------------ Time-in-Zone Table ------------------
+    # --- Time-in-Zone Table ---
     if "combined_df" in locals():
         pdf.section_title("Time-in-Zone Table [hh:mm]")
-
-        pdf.set_font("Helvetica", "B", 10)
-        pdf.set_fill_color(245, 245, 245)
-
         page_w = pdf.w - pdf.l_margin - pdf.r_margin
         n_cols = 1 + len(combined_df.columns)
         col_width = page_w / n_cols
         row_height = 8
 
         # Header
+        pdf.set_font("Helvetica", "B", 10)
+        pdf.set_fill_color(245, 245, 245)
         pdf.set_text_color(20, 20, 20)
         pdf.cell(col_width, row_height, "HR Zone", border=1, fill=True)
         for col in combined_df.columns:
@@ -918,88 +979,95 @@ if st.button("📄 Generate PDF Report"):
             pdf.ln()
 
         pdf.add_spacer(6)
+        pdf.add_page()
 
-        # ------------------ Table 1: Lap/Climb Info ------------------
-    if st.session_state["do_lap_analysis"]:
+    # --- Lap / Climb Table ---
+    if st.session_state.get("do_lap_analysis") and "lap_zone_df" in locals():
         pdf.section_title(f"{analysis_type} - Info Table")
 
-        pdf.set_font("Helvetica", "B", 10)
-        pdf.set_fill_color(245, 245, 245)
-
-        # Select only the columns without zones
-        info_cols = [col for col in lap_zone_df.columns if not col.startswith("Z") and not col.startswith("%")]
+        lap_zone_df_copy = lap_zone_df.copy()
+        info_cols = [col for col in lap_zone_df_copy.columns if not col.startswith("Z") and not col.startswith("%")]
         n_cols = len(info_cols)
-        page_w = pdf.w - pdf.l_margin - pdf.r_margin
-        col_width = page_w / n_cols
+        col_width = (pdf.w - pdf.l_margin - pdf.r_margin) / n_cols
         row_height = 6
 
-        # Header
+        # Header for Info Table
+        pdf.set_font("Helvetica", "B", 10)
+        pdf.set_fill_color(245, 245, 245)
         for col in info_cols:
-            pdf.cell(col_width, row_height, str(col)[:10], border=1, fill=True, align='C')
+            pdf.cell(col_width, row_height, str(col)[:12], border=1, fill=True, align='C')
         pdf.ln(row_height)
 
-        # Rows
+        # Rows for Info Table
         pdf.set_font("Helvetica", "", 10)
-        for _, row in lap_zone_df.iterrows():
+        for _, row in lap_zone_df_copy.iterrows():
             for col in info_cols:
                 pdf.cell(col_width, row_height, str(row[col]), border=1, align='C')
             pdf.ln(row_height)
-
         pdf.add_spacer(6)
 
-        # ------------------ Table 2: LAP/CLIMB CARDIAC ANALYSIS ------------------
-    if st.session_state["do_lap_analysis"]:
-        pdf.section_title(f"{analysis_type} - HR DATA Analysis")
+        # --- HR Data Analysis Table ---
+        pdf.section_title(f"{analysis_type} - HR Data Analysis")
 
-        pdf.set_font("Helvetica", "B", 10)
-        pdf.set_fill_color(245, 245, 245)
-
-        zone_pct_cols = [f"{analysis_type[:-8]} name"] + [f"Z{i}" for i in range(1,6)] + [f"% Z{i}" for i in range(1,6)]
-        n_cols = len(zone_pct_cols)
-        col_width = page_w / n_cols
+        hr_cols = ["Lap name"] + [f"Z{i}" for i in range(1,6)] + [f"% Z{i}" for i in range(1,6)]
+        n_cols = len(hr_cols)
+        col_width = (pdf.w - pdf.l_margin - pdf.r_margin) / n_cols
         row_height = 6
 
         # Header
-        for col in zone_pct_cols:
+        pdf.set_font("Helvetica", "B", 10)
+        pdf.set_fill_color(245, 245, 245)
+        for col in hr_cols:
             pdf.cell(col_width, row_height, col, border=1, fill=True, align='C')
         pdf.ln(row_height)
 
         # Rows
         pdf.set_font("Helvetica", "", 10)
-        for _, row in lap_zone_df.iterrows():
-            for col in zone_pct_cols:
-                pdf.cell(col_width, row_height, str(row[col]), border=1, align='C')
+        for _, row in lap_zone_df_copy.iterrows():
+            # Use same lap name as in first table
+            pdf.cell(col_width, row_height, str(row[info_cols[0]]), border=1, align='C')  # lap name
+            for i in range(1, 6):
+                pdf.cell(col_width, row_height, str(row.get(f"Z{i}", "")), border=1, align='C')
+            for i in range(1, 6):
+                pdf.cell(col_width, row_height, str(row.get(f"% Z{i}", "")), border=1, align='C')
             pdf.ln(row_height)
 
         pdf.add_spacer(6)
         pdf.add_page()
 
-    # PDF CHARTS
-    # ------------------ PDF Chart Helper ------------------
+    # --- Helper: Add chart to PDF ---
+    import tempfile
+    import matplotlib.pyplot as plt
+    import seaborn as sns
+
     def add_chart_to_pdf(fig, title=None):
         if title:
             pdf.section_title(title)
-        buf = io.BytesIO()
-        fig.savefig(buf, format="PNG", dpi=200, bbox_inches="tight")
-        buf.seek(0)
-        pdf.image(buf, x=10, w=190)
+        with tempfile.NamedTemporaryFile(suffix=".png", delete=False) as tmpfile:
+            fig.savefig(tmpfile.name, format="PNG", dpi=200, bbox_inches="tight")
+            tmpfile.close()
+            pdf.image(tmpfile.name, x=10, w=190)
         plt.close(fig)
 
-    # ------------------ Bar Chart ------------------
+    # --- Add Bar Chart & Heatmap ---
     if "bar_df" in locals():
-        fig = plt.figure(figsize=(10, 4))
+        fig, ax = plt.subplots(figsize=(10, 4))
         zones = np.arange(len(bar_df.index))
         width = 0.2
+
         for i, seg in enumerate(bar_df.columns):
             vals = bar_df[seg].apply(lambda t: int(t.split(':')[0]) + int(t.split(':')[1])/60)
-            plt.bar(zones + i * width, vals, width=width, label=seg)
-        plt.xticks(zones + width * (len(bar_df.columns)-1)/2, bar_df.index)
-        plt.ylabel("Hours")
-        plt.title("Time-in-Zone per Segment")
+            ax.bar(zones + i * width, vals, width=width, label=seg)
+
+        ax.set_xticks(zones + width * (len(bar_df.columns)-1)/2)
+        ax.set_xticklabels(bar_df.index)
+        ax.set_ylabel("Hours")
+        ax.set_title("Time-in-Zone per Segment")
+        ax.legend(title="Segment")  # Added legend with title
         plt.tight_layout()
         add_chart_to_pdf(fig, title="Time-in-Zone - Bar Chart")
 
-    # ------------------ Heatmap ------------------
+
     if "heatmap_df_minutes" in locals():
         fig, ax = plt.subplots(figsize=(10, 3 + max(0, len(heatmap_df_minutes)/4)))
         sns.heatmap(
@@ -1019,28 +1087,36 @@ if st.button("📄 Generate PDF Report"):
         add_chart_to_pdf(fig, title="Time-in-Zone - Heatmap")
     pdf.add_page()
 
-    # ------------------ Lap/Climb % Time-in-Zone Chart ------------------
-    if st.session_state["do_lap_analysis"]:
-
+    # --- Lap/Climb % Time-in-Zone Chart ---
+    if st.session_state.get("do_lap_analysis") and 'lap_zone_df' in locals() and not lap_zone_df.empty:
         fig, ax = plt.subplots(figsize=(10, 4))
-        zones = ["Z1","Z2","Z3","Z4","Z5"]
+        
+        zones = ["Z1", "Z2", "Z3", "Z4", "Z5"]
+        n_laps = len(lap_zone_df)
         x = np.arange(len(zones))
-        width = 0.8 / len(lap_zone_df)  # bar width depending on number of laps
-
+        bar_width = 0.8 / max(n_laps, 1)  # prevent division by zero
+        
         for i, (_, row) in enumerate(lap_zone_df.iterrows()):
-            pct_values = [float(str(row[f"% {z}"]).rstrip('%')) for z in zones]
-            ax.bar(x + i*width, pct_values, width=width, label=row[f"{analysis_type[:-8]} name"])
-
-        ax.set_xticks(x + width*(len(lap_zone_df)-1)/2)
+            pct_values = []
+            for z in zones:
+                val = row.get(f"% {z}", "0")
+                if isinstance(val, str):
+                    val = val.rstrip('%')
+                pct_values.append(float(val or 0))
+            ax.bar(x + i * bar_width, pct_values, width=bar_width, label=row.get("name", f"Lap {i+1}"))
+        
+        # Center x-ticks
+        ax.set_xticks(x + bar_width * (n_laps - 1) / 2)
         ax.set_xticklabels(zones)
+        
         ax.set_ylabel("Percentage (%)")
-        ax.set_title(f"{analysis_type} - % Time in HR Zones")
+        ax.set_title(f"{analysis_type.capitalize()} - % Time in HR Zones")
         ax.legend()
+        
         plt.tight_layout()
+        add_chart_to_pdf(fig, title=f"{analysis_type.capitalize()} - % Time in HR Zones")
 
-        add_chart_to_pdf(fig, title=f"{analysis_type} - % Time in HR Zones")
-
-    # ------------------ HR Trend ------------------
+    # --- HR Trend Chart ---
     fig = plt.figure(figsize=(10, 4))
     plt.plot(df["elapsed_hours"], df["hr_smooth"], label="HR Smooth")
     try:
@@ -1054,14 +1130,11 @@ if st.button("📄 Generate PDF Report"):
     plt.tight_layout()
     add_chart_to_pdf(fig, title="Heart Rate - Trend Analysis")
 
-    # ------------------ Output PDF ------------------
-    pdf_buffer = io.BytesIO()
-    pdf.output(pdf_buffer)
-    pdf_buffer.seek(0)
-
+    # --- Output PDF ---
+    pdf_bytes = pdf.output(dest="S").encode('latin1')
     st.download_button(
         label="⬇️ Download PDF",
-        data=pdf_buffer,
+        data=pdf_bytes,
         mime="application/pdf",
         file_name=f"{athlete_name}_{race_name}_report.pdf"
-    )
+        )
