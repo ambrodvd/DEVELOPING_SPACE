@@ -105,13 +105,13 @@ for zone, val in default_zones.items():
         st.session_state[zone] = val
 
 st.subheader("❤️ Athlete Heart Rate Zones")
-st.caption("Please input the *upper limit (in bpm)* for each training zone:")
 
 # --- Input method ---
 input_method = st.radio("Select input method:", ["Manual Input", "Import CSV"])
 
 # --- Manual input ---
 if input_method == "Manual Input":
+    st.caption("Please input the *upper limit (in bpm)* for each training zone:")
     z1 = st.number_input("Zone 1 (Recovery) - up to:", min_value=60, value=st.session_state['z1'])
     z2 = st.number_input("Zone 2 (Aerobic) - up to:", min_value=60, value=st.session_state['z2'])
     z3 = st.number_input("Zone 3 (Tempo) - up to:", min_value=60, value=st.session_state['z3'])
@@ -1388,7 +1388,7 @@ if uploaded_file is not None and 'df' in locals() and not df.empty and 'HR Zone'
         add_chart_to_pdf(fig, title="Heart Rate - Trend Analysis")
 
         # --- Output PDF ---
-        pdf_bytes = pdf.output(dest="S").encode('latin1')
+        pdf_bytes = pdf.output(dest="S")
         st.download_button(
             label="⬇️ Download PDF",
             data=pdf_bytes,
