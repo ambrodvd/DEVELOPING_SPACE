@@ -26,24 +26,21 @@ if uploaded_file is not None:
     st.success("FIT file uploaded!")
     try:
         fitfile = FitFile(io.BytesIO(uploaded_file.getvalue()))
-        # --- Build consistent DataFrame ---
         records = []
         for rec in fitfile.get_messages("record"):
-            row = {}
-            for field in rec:
-                if field.name in ["timestamp","heart_rate","distance","enhanced_altitude","position_lat","position_long"]:
-                    row[field.name] = field.value
+            row = {f.name: f.value for f in rec if f.name in ["timestamp","heart_rate","distance","enhanced_altitude","position_lat","position_long"]}
             if row:
                 records.append(row)
+
         if not records:
             st.warning("⚠️ No usable records in this FIT file.")
             st.stop()
+
         df = pd.DataFrame(records)
 
         # Fill missing columns
         for col in ["heart_rate","distance","enhanced_altitude","position_lat","position_long"]:
-            if col not in df.columns:
-                df[col] = np.nan
+            df[col] = df.get(col, np.nan)
 
         # Convert units
         df["distance_km"] = df["distance"].apply(lambda x: x/1000 if pd.notna(x) else np.nan)
@@ -51,27 +48,23 @@ if uploaded_file is not None:
         df["lat"] = df["position_lat"].apply(lambda s: s*(180/2**31) if pd.notna(s) else np.nan)
         df["lon"] = df["position_long"].apply(lambda s: s*(180/2**31) if pd.notna(s) else np.nan)
 
-        # Elapsed time
-        if "timestamp" in df.columns:
+        # Elapsed time safely
+        if "timestamp" in df.columns and not df["timestamp"].isna().all():
             df["timestamp"] = pd.to_datetime(df["timestamp"])
             start_time = df["timestamp"].iloc[0]
             df["elapsed_sec"] = (df["timestamp"] - start_time).dt.total_seconds()
         else:
             df["elapsed_sec"] = np.arange(len(df))
-        df["elapsed_hours"] = df["elapsed_sec"]/3600
 
-        # Smooth HR
-        if "heart_rate" in df.columns:
-            df["hr_smooth"] = df["heart_rate"].rolling(window=3, min_periods=1).mean()
-        else:
-            df["hr_smooth"] = np.nan
+        df["elapsed_hours"] = df["elapsed_sec"]/3600
+        df["hr_smooth"] = df["heart_rate"].rolling(window=3, min_periods=1).mean() if "heart_rate" in df.columns else np.nan
+
+        # Save df in session state so you can safely access later
+        st.session_state['fit_df'] = df
 
         # Summary metrics
         kilometers = df["distance_km"].max() if "distance_km" in df.columns else 0
         total_elevation_gain = df["elevation_m"].diff().clip(lower=0).sum() if "elevation_m" in df.columns else 0
-        start_coords = (df["lat"].iloc[0], df["lon"].iloc[0]) if "lat" in df.columns and "lon" in df.columns else (None,None)
-        end_coords = (df["lat"].iloc[-1], df["lon"].iloc[-1]) if "lat" in df.columns and "lon" in df.columns else (None,None)
-
         st.session_state['kilometers'] = int(kilometers)
         st.session_state['total_elevation_gain'] = int(total_elevation_gain)
 
@@ -79,6 +72,7 @@ if uploaded_file is not None:
         st.error(f"❌ Error reading FIT file: {e}")
 else:
     st.info("👆 Please upload a .fit file to begin.")
+
 
 # --- Athlete and race info form ---
 with st.form("race_info_form"):
