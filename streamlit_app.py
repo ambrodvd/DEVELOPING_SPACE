@@ -104,53 +104,52 @@ if info_submitted:
     st.session_state['race_date'] = race_date
     st.success("✅ Form submitted successfully!")
 
+# --- Initialize default session_state values if missing ---
+default_zones = {'z1': 140, 'z2': 160, 'z3': 170, 'z4': 180, 'z5': 200}
+for zone, val in default_zones.items():
+    if zone not in st.session_state:
+        st.session_state[zone] = val
 
-
-
-# --- Initialize session_state values if not present ---
-for z in ['z1', 'z2', 'z3', 'z4', 'z5']:
-    if z not in st.session_state:
-        st.session_state[z] = 140 + 20 * (int(z[-1])-1)  # default values: 140,160,170,180,200
-
-# --- Heart Rate Zones Form ---
 st.subheader("❤️ Athlete Heart Rate Zones")
 st.caption("Please input the *upper limit (in bpm)* for each training zone:")
 
-# --- Input Method Selector ---
+# --- Input method ---
 input_method = st.radio("Select input method:", ["Manual Input", "Import CSV"])
 
-# --- Manual Input ---
+# --- Manual input ---
 if input_method == "Manual Input":
-    z1 = st.number_input("Zone 1 (Recovery) - up to:", min_value=60, step=1, value=st.session_state['z1'])
-    z2 = st.number_input("Zone 2 (Aerobic) - up to:", min_value=60, step=1, value=st.session_state['z2'])
-    z3 = st.number_input("Zone 3 (Tempo) - up to:", min_value=60, step=1, value=st.session_state['z3'])
-    z4 = st.number_input("Zone 4 (Sub Threshold) - up to:", min_value=60, step=1, value=st.session_state['z4'])
-    z5 = st.number_input("Zone 5 (Super Threshold) - up to:", min_value=60, step=1, value=st.session_state['z5'])
+    z1 = st.number_input("Zone 1 (Recovery) - up to:", min_value=60, value=st.session_state['z1'])
+    z2 = st.number_input("Zone 2 (Aerobic) - up to:", min_value=60, value=st.session_state['z2'])
+    z3 = st.number_input("Zone 3 (Tempo) - up to:", min_value=60, value=st.session_state['z3'])
+    z4 = st.number_input("Zone 4 (Sub Threshold) - up to:", min_value=60, value=st.session_state['z4'])
+    z5 = st.number_input("Zone 5 (Super Threshold) - up to:", min_value=60, value=st.session_state['z5'])
 
-# --- CSV Import ---
+# --- CSV import ---
 elif input_method == "Import CSV":
-    uploaded_file = st.file_uploader("Upload HR Zones CSV:", type=["csv"], key="hr_zones_csv")
-    if uploaded_file is not None:
-        # Process the file immediately
-        df = pd.read_csv(uploaded_file)
-        if all(col in df.columns for col in ['z1','z2','z3','z4','z5']):
-            z1, z2, z3, z4, z5 = df.loc[0, ['z1','z2','z3','z4','z5']]
-            # Save to session_state
-            st.session_state.update({'z1': z1, 'z2': z2, 'z3': z3, 'z4': z4, 'z5': z5})
-            st.success(f"✅ Zones imported successfully for {df.loc[0,'athlete_name'] if 'athlete_name' in df.columns else 'athlete'}")
+    uploaded_hr_csv = st.file_uploader("Upload HR Zones CSV:", type=["csv"], key="hr_zones_csv")
+    if uploaded_hr_csv is not None:
+        hr_df = pd.read_csv(uploaded_hr_csv)
+        required_cols = ['z1','z2','z3','z4','z5']
+        if all(col in hr_df.columns for col in required_cols):
+            z1, z2, z3, z4, z5 = hr_df.loc[0, required_cols]
+            # Update session_state immediately
+            st.session_state.update({col: hr_df.loc[0, col] for col in required_cols})
+            athlete = hr_df.loc[0, 'athlete_name'] if 'athlete_name' in hr_df.columns else 'athlete'
+            st.success(f"✅ Zones imported successfully for {athlete}")
         else:
             st.error("⚠️ CSV must contain columns: z1, z2, z3, z4, z5")
+        # Sync local variables with session_state
+        z1, z2, z3, z4, z5 = [st.session_state[col] for col in required_cols]
 
-        # Update local variables to reflect imported values
-        z1, z2, z3, z4, z5 = [st.session_state[z] for z in ['z1','z2','z3','z4','z5']]
-
-# --- Submit HR Zones ---
+# --- Submit zones ---
 if st.button("Submit HR Zones"):
     if not (z1 < z2 < z3 < z4 < z5):
         st.error("⚠️ There is something wrong in the HR data. Please correct the values.")
     else:
+        # Save zones in session_state
         st.session_state.update({'z1': z1, 'z2': z2, 'z3': z3, 'z4': z4, 'z5': z5})
         st.success("✅ Heart Rate Zones saved successfully!")
+
         st.write(f"""
         **HR Zones:**  
         - 🩵 Zone 1 (Recovery): ≤ {z1} bpm  
@@ -159,16 +158,17 @@ if st.button("Submit HR Zones"):
         - 🧡 Zone 4 (Sub Threshold): {z3+1} - {z4} bpm  
         - ❤️ Zone 5 (Super Threshold): {z4+1} - {z5} bpm
         """)
+
         # --- Export CSV ---
-        athlete_name = st.session_state.get('athlete_name', None)
+        athlete_name = st.session_state.get('athlete_name')
         if athlete_name:
             export_df = pd.DataFrame([{
                 'athlete_name': athlete_name, 'z1': z1, 'z2': z2, 'z3': z3, 'z4': z4, 'z5': z5
             }])
-            csv = export_df.to_csv(index=False).encode('utf-8')
+            csv_data = export_df.to_csv(index=False).encode('utf-8')
             st.download_button(
                 label="📥 Export Zones to CSV for future analysis",
-                data=csv,
+                data=csv_data,
                 file_name=f"{athlete_name.replace(' ','_')}_HR_Zones.csv",
                 mime='text/csv'
             )
@@ -668,8 +668,7 @@ st.markdown(
     unsafe_allow_html=True
 )
 
-# ----- analys
-
+# ----- analysis start -----#
 
 if uploaded_file is None:
     st.info("👆 Upload a FIT file to run the analysis")
