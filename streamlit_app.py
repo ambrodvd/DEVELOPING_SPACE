@@ -1381,13 +1381,12 @@ if uploaded_file is not None and 'df' in locals() and not df.empty and 'HR Zone'
         add_chart_to_pdf(fig, title="Heart Rate - Trend Analysis")
 
         # --- Output PDF ---
-        pdf_bytes = pdf.output(dest="S").encode('latin1')
         st.download_button(
             label="⬇️ Download PDF",
             data=pdf_bytes,
-            mime="application/pdf",
-            file_name=f"{athlete_name}_{race_name}_report.pdf"
-            )
-        
+            file_name="report.pdf",
+            mime="application/pdf"
+        )
+
 else:
     st.warning ("⚠️ Please submit race, athlete and cardiac data to generate the PDF report")
