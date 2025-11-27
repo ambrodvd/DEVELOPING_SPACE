@@ -1387,14 +1387,20 @@ if uploaded_file is not None and 'df' in locals() and not df.empty and 'HR Zone'
         plt.tight_layout()
         add_chart_to_pdf(fig, title="Heart Rate - Trend Analysis")
 
+        pdf_output = pdf.output(dest="S")
+        if isinstance(pdf_output, str):
+            # FPDF v1.x returns string → encode to bytes
+            pdf_bytes = pdf_output.encode('latin1')
+        else:
+            # FPDF v2.x returns bytearray → already bytes, no need to encode
+            pdf_bytes = pdf_output
 
-        # --- Output PDF ---
-        pdf_bytes = pdf.output(dest="S").encode('latin1')  # or 'utf-8', but FPDF usually uses 'latin1'
         st.download_button(
             label="⬇️ Download PDF",
             data=pdf_bytes,
             file_name="report.pdf",
             mime="application/pdf"
         )
+
 else:
     st.warning ("⚠️ Please submit race, athlete and cardiac data to generate the PDF report")
