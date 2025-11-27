@@ -109,26 +109,43 @@ with st.form("hr_zones_form"):
     st.subheader("❤️ Athlete Heart Rate Zones")
     st.caption("Please input the *upper limit (in bpm)* for each training zone:")
 
-    # --- Import CSV ---
-    uploaded_zones_csv = st.file_uploader("Import HR Zones CSV:", type=["csv"])
-    if uploaded_zones_csv:
-        df_import = pd.read_csv(uploaded_zones_csv)
-        if all(col in df_import.columns for col in ['z1','z2','z3','z4','z5']):
-            z1, z2, z3, z4, z5 = df_import.loc[0, ['z1','z2','z3','z4','z5']]
-            st.session_state['z1'], st.session_state['z2'], st.session_state['z3'], st.session_state['z4'], st.session_state['z5'] = z1, z2, z3, z4, z5
-            st.success(f"✅ Zones imported successfully for {df_import.loc[0,'athlete_name'] if 'athlete_name' in df_import.columns else 'athlete'}")
-        else:
-            st.error("⚠️ CSV must contain columns: z1, z2, z3, z4, z5")
+    # --- Input Method Selector ---
+    input_method = st.radio(
+        "Select input method:",
+        ("Manual Input", "Import CSV")
+    )
+
+    # --- Initialize variables ---
+    z1 = st.session_state.get('z1', 140)
+    z2 = st.session_state.get('z2', 160)
+    z3 = st.session_state.get('z3', 170)
+    z4 = st.session_state.get('z4', 180)
+    z5 = st.session_state.get('z5', 200)
+
+    # --- CSV Import ---
+    if input_method == "Import CSV":
+        uploaded_zones_csv = st.file_uploader("Upload HR Zones CSV:", type=["csv"])
+        if uploaded_zones_csv:
+            df_import = pd.read_csv(uploaded_zones_csv)
+            if all(col in df_import.columns for col in ['z1','z2','z3','z4','z5']):
+                z1, z2, z3, z4, z5 = df_import.loc[0, ['z1','z2','z3','z4','z5']]
+                st.session_state['z1'], st.session_state['z2'], st.session_state['z3'], st.session_state['z4'], st.session_state['z5'] = z1, z2, z3, z4, z5
+                st.success(f"✅ Zones imported successfully for {df_import.loc[0,'athlete_name'] if 'athlete_name' in df_import.columns else 'athlete'}")
+            else:
+                st.error("⚠️ CSV must contain columns: z1, z2, z3, z4, z5")
 
     # --- Manual Input ---
-    z1 = st.number_input("Zone 1 (Recovery) - up to:", min_value=60, step=1, value=st.session_state.get('z1', 140))
-    z2 = st.number_input("Zone 2 (Aerobic) - up to:", min_value=60, step=1, value=st.session_state.get('z2', 160))
-    z3 = st.number_input("Zone 3 (Tempo) - up to:", min_value=60, step=1, value=st.session_state.get('z3', 170))
-    z4 = st.number_input("Zone 4 (Sub Threshold) - up to:", min_value=60, step=1, value=st.session_state.get('z4', 180))
-    z5 = st.number_input("Zone 5 (Super Threshold) - up to:", min_value=60, step=1, value=st.session_state.get('z5', 200))
+    if input_method == "Manual Input" or not uploaded_zones_csv:
+        z1 = st.number_input("Zone 1 (Recovery) - up to:", min_value=60, step=1, value=z1)
+        z2 = st.number_input("Zone 2 (Aerobic) - up to:", min_value=60, step=1, value=z2)
+        z3 = st.number_input("Zone 3 (Tempo) - up to:", min_value=60, step=1, value=z3)
+        z4 = st.number_input("Zone 4 (Sub Threshold) - up to:", min_value=60, step=1, value=z4)
+        z5 = st.number_input("Zone 5 (Super Threshold) - up to:", min_value=60, step=1, value=z5)
 
+    # --- Submit Button ---
     zones_submitted = st.form_submit_button("Submit HR Zones")
 
+# --- Handle Submission ---
 if zones_submitted:
     if not (z1 < z2 < z3 < z4 < z5):
         st.error("⚠️ There's something wrong in the HR data. Please correct the values.")
@@ -145,7 +162,7 @@ if zones_submitted:
         - ❤️ Zone 5 (Super Threshold): {z4+1} - {z5} bpm
         """)
 
-        # --- Export CSV (direct download button) ---
+        # --- Export CSV ---
         athlete_name = st.session_state.get('athlete_name', None)
         if athlete_name:
             export_df = pd.DataFrame([{
@@ -153,7 +170,7 @@ if zones_submitted:
             }])
             csv = export_df.to_csv(index=False).encode('utf-8')
             st.download_button(
-                label="📥 Export Zones to CSV",
+                label="📥 Export Zones to CSV for future analysis",
                 data=csv,
                 file_name=f"{athlete_name.replace(' ','_')}_HR_Zones.csv",
                 mime='text/csv'
