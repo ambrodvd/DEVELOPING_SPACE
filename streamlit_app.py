@@ -74,8 +74,6 @@ if uploaded_file is not None:
 
         st.session_state['kilometers'] = int(kilometers)
         st.session_state['total_elevation_gain'] = int(total_elevation_gain)
-        st.markdown(f"**Start Coordinates:** {start_coords}")
-        st.markdown(f"**End Coordinates:** {end_coords}")
 
     except Exception as e:
         st.error(f"❌ Error reading FIT file: {e}")
