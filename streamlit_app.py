@@ -1387,13 +1387,13 @@ if uploaded_file is not None and 'df' in locals() and not df.empty and 'HR Zone'
         plt.tight_layout()
         add_chart_to_pdf(fig, title="Heart Rate - Trend Analysis")
 
-        pdf_output = pdf.output(dest="S")
-        if isinstance(pdf_output, str):
-            # FPDF v1.x returns string → encode to bytes
-            pdf_bytes = pdf_output.encode('latin1')
+        pdf_data = pdf.output(dest="S")
+        if isinstance(pdf_data, str):
+            pdf_bytes = pdf_data.encode('latin1')  # FPDF string -> bytes
+        elif isinstance(pdf_data, (bytes, bytearray)):
+            pdf_bytes = bytes(pdf_data)           # already bytes-like
         else:
-            # FPDF v2.x returns bytearray → already bytes, no need to encode
-            pdf_bytes = pdf_output
+            raise TypeError(f"Unexpected type from FPDF output: {type(pdf_data)}")
 
         st.download_button(
             label="⬇️ Download PDF",
@@ -1401,6 +1401,5 @@ if uploaded_file is not None and 'df' in locals() and not df.empty and 'HR Zone'
             file_name="report.pdf",
             mime="application/pdf"
         )
-
 else:
     st.warning ("⚠️ Please submit race, athlete and cardiac data to generate the PDF report")
