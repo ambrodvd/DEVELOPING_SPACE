@@ -235,6 +235,8 @@ else:
     st.session_state["analysis_type"] = None
     st.session_state["do_lap_analysis"] = False
 
+if analysis_type != "Climb Analysis":
+    st.session_state["climb_data_insert"] = None
 #------------#
 #----------- CLIMB ANALYS CHOICHE --------#
 
@@ -253,7 +255,12 @@ if st.session_state.get("do_lap_analysis") and st.session_state.get("analysis_ty
 # ---------------------------
 # AUTOMATIC CLIMB DETECTOR (UNIFIED WITH LAP WORKFLOW)
 # ---------------------------
-if st.session_state.get("climb_data_insert") == "automatic" and uploaded_file is not None and "df" in locals():
+if (
+    st.session_state.get("analysis_type") == "climb" and
+    st.session_state.get("climb_data_insert") == "automatic" and
+    uploaded_file is not None and
+    "df" in locals()
+):
 
     min_elev_gain = st.number_input("Minimum elevation gain for a climb (meters)", value=300, min_value=1)
     max_downhill = st.number_input("Maximum allowed downhill inside a climb (meters)", value=10, min_value=1)
@@ -901,7 +908,23 @@ if 'df' in locals() and not df.empty:
             lap_zone_df = pd.DataFrame(lap_zone_data, columns=columns)
             if "Distance (km)" in lap_zone_df.columns:
                 lap_zone_df["Distance (km)"] = lap_zone_df["Distance (km)"].astype(float).map("{:.1f}".format)
-            st.dataframe(lap_zone_df.style.hide(axis="index"))
+            # Build DataFrame
+            lap_zone_df = pd.DataFrame(lap_zone_data, columns=columns)
+            if "Distance (km)" in lap_zone_df.columns:
+                lap_zone_df["Distance (km)"] = lap_zone_df["Distance (km)"].astype(float).map("{:.1f}".format)
+
+            # Make editable
+            st.markdown(f"### {analysis_type} Analysis")
+            st.markdown("*You can edit the table clicking the data you want to change*")
+            edited_df = st.data_editor(
+                lap_zone_df,
+                num_rows="dynamic",
+                use_container_width=True
+                )
+
+            # Store edits for later use
+            st.session_state["lap_zone_data_edited"] = edited_df
+
 
         else:
             st.warning("⚠️ Please submit the Heart Rate Zones first to enable Lap/Climb analysis.")
@@ -1398,7 +1421,7 @@ if uploaded_file is not None and 'df' in locals() and not df.empty and 'HR Zone'
         st.download_button(
             label="⬇️ Download PDF",
             data=pdf_bytes,
-            file_name="report.pdf",
+            file_name=f"{st.session_state['athlete_name']}_{st.session_state['race_name']}_{st.session_state['race_date'].year}_Race_report.pdf",
             mime="application/pdf"
         )
 else:
